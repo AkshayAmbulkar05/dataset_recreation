@@ -1,0 +1,159 @@
+import yfinance as yf
+import pandas as pd
+import time
+import tkinter as tk
+from tkinter import messagebox
+
+# Company ↔ ticker mapping
+company_tickers = {
+    'Salesforce': 'CRM', 'Microsoft': 'MSFT', 'Adobe': 'ADBE',
+    'Google': 'GOOGL', 'Amazon': 'AMZN', 'Oracle': 'ORCL',
+    'IBM': 'IBM', 'SAP': 'SAP', 'Workday': 'WDAY',
+    'ServiceNow': 'NOW', 'Zoom': 'ZM', 'Slack': 'WORK',
+    'Snowflake': 'SNOW', 'Atlassian': 'TEAM', 'Dropbox': 'DBX',
+    'Cisco': 'CSCO', 'VMware': 'VMW', 'HubSpot': 'HUBS',
+    'Intuit': 'INTU', 'Netflix': 'NFLX', 'Spotify': 'SPOT',
+    'Meta': 'META', 'Dell': 'DELL', 'Hewlett Packard': 'HPE',
+    'TCS': 'TCS.NS', 'Infosys': 'INFY', 'Wipro': 'WIPRO'
+}
+
+MAX_RETRIES = 3
+
+def fetch_data(company_list):
+    expanded_rows = []
+
+    for company in company_list:
+        ticker_symbol = company_tickers.get(company)
+        if not ticker_symbol:
+            print(f"Skipping '{company}': ticker not found.")
+            continue
+
+        for attempt in range(MAX_RETRIES):
+            try:
+                ticker = yf.Ticker(ticker_symbol)
+                info = ticker.info
+                financials = ticker.financials
+
+                company_name = info.get("longName", company)
+                revenue = financials.loc["Total Revenue"][0] if "Total Revenue" in financials.index else None
+                employees = info.get("fullTimeEmployees")
+                market_cap = info.get("marketCap")
+                pe_ratio = info.get("trailingPE")
+                net_income = financials.loc["Net Income"][0] if "Net Income" in financials.index else None
+                share_price = info.get("currentPrice")
+                operating_margin = info.get("operatingMargins")
+
+                # ESG Score
+                sustainability = ticker.sustainability
+                esg_score = None
+                if isinstance(sustainability, pd.DataFrame) and "totalEsg" in sustainability.index:
+                    esg_score = sustainability.loc["totalEsg"][0]
+
+                # CEO name
+                officers = info.get("companyOfficers", [])
+                ceo_name = next(
+                    (f"{o.get('name')} ({o.get('title')})" for o in officers
+                     if 'ceo' in (o.get("title", "").lower())), 
+                    "Not Available"
+                )
+
+                # Base row data
+                base_data = {
+                    "Company": company_name,
+                    "Revenue": revenue,
+                    "No of Employees": employees,
+                    "Market Cap": market_cap,
+                    "P/E Ratio": pe_ratio,
+                    "Net Income": net_income,
+                    "Net Zero Sustainability Rank": esg_score,  # ✅ Column label as requested
+                    "Share Price": share_price,
+                    "Attrition": "Data Not Available",
+                    "Operating Margin": operating_margin,
+                    "Diversity": "Data Not Available",
+                    "CEO": ceo_name
+                }
+
+                # CEO row
+                ceo_row = base_data.copy()
+                ceo_row.update({
+                    "Row Type": "CEO",
+                    "Detail Level": "",
+                    "Key Executives": ceo_name,
+                    "News Title": "",
+                    "News URL": ""
+                })
+                expanded_rows.append(ceo_row)
+
+                # Key Executives
+                exec_count = 0
+                for officer in officers:
+                    title = officer.get("title", "")
+                    if 'ceo' in title.lower() or exec_count >= 5:
+                        continue
+                    name = officer.get("name", "N/A")
+                    level = f"Level {exec_count + 1}"
+                    exec_row = base_data.copy()
+                    exec_row.update({
+                        "Row Type": "Key Executive",
+                        "Detail Level": level,
+                        "Key Executives": f"{name} ({title})",
+                        "News Title": "",
+                        "News URL": ""
+                    })
+                    expanded_rows.append(exec_row)
+                    exec_count += 1
+
+                # ✅ Top 5 News
+                news_items = ticker.news[:5]
+                for idx, item in enumerate(news_items):
+                    content = item.get('content', {})
+                    title = content.get('title', 'No Title')
+                    url = content.get('clickThroughUrl', {}).get('url', content.get('previewUrl', ''))
+                    news_row = base_data.copy()
+                    news_row.update({
+                        "Row Type": "News",
+                        "Detail Level": f"Top {idx + 1}",
+                        "Key Executives": "",
+                        "News Title": title,
+                        "News URL": url
+                    })
+                    expanded_rows.append(news_row)
+
+                time.sleep(1)
+                break  # success
+
+            except Exception as e:
+                print(f"Attempt {attempt + 1} failed for {company}: {e}")
+                time.sleep(2 * (attempt + 1))
+        else:
+            print(f"❌ Skipped '{company}' after {MAX_RETRIES} attempts.")
+
+    if expanded_rows:
+        df = pd.DataFrame(expanded_rows)
+        df.to_csv("Company_Summary_Details.csv", index=False)
+        messagebox.showinfo("Success", "✅ Data saved to 'Company_Summary_Details.csv'.")
+    else:
+        messagebox.showwarning("No Data", "⚠️ No data to save — all companies failed or were skipped.")
+
+def run_gui():
+    def on_submit():
+        companies = entry.get()
+        if not companies:
+            messagebox.showerror("Input Error", "Please enter at least one company name.")
+            return
+        company_list = [name.strip() for name in companies.split(',')]
+        fetch_data(company_list)
+
+    window = tk.Tk()
+    window.title("Company Financial Data Fetcher")
+
+    tk.Label(window, text="Enter company names (comma-separated):").pack(pady=10)
+    entry = tk.Entry(window, width=60)
+    entry.pack(pady=5)
+
+    tk.Button(window, text="Fetch Data", command=on_submit, bg="blue", fg="white").pack(pady=15)
+
+    window.mainloop()
+
+if __name__ == "__main__":
+    run_gui()
